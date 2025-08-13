@@ -110,6 +110,7 @@
     )
     (asserts! (>= amount MIN-DEPOSIT) ERR-MIN-DEPOSIT)
     (asserts! (not (var-get vault-locked)) ERR-VAULT-LOCKED)
+    (asserts! (not (var-get contract-paused)) ERR-CONTRACT-PAUSED)
     (asserts! (is-valid-tier tier) ERR-INVALID-TIER)
     (try! (stx-transfer? amount sender (as-contract tx-sender)))
     (map-set user-positions
@@ -212,12 +213,14 @@
 
 (define-constant ERR-NO-YIELD-AVAILABLE (err u106))
 (define-constant ERR-DISTRIBUTION-ACTIVE (err u107))
+(define-constant ERR-CONTRACT-PAUSED (err u108))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var total-yield-pool uint u0)
 (define-data-var last-distribution-height uint u0)
 (define-data-var distribution-interval uint u1440)
 (define-data-var current-epoch uint u0)
+(define-data-var contract-paused bool false)
 
 (define-map user-stakes principal 
   {
@@ -247,6 +250,7 @@
     )
     (asserts! (>= amount MIN-DEPOSIT) ERR-MIN-DEPOSIT)
     (asserts! (not (var-get vault-locked)) ERR-VAULT-LOCKED)
+    (asserts! (not (var-get contract-paused)) ERR-CONTRACT-PAUSED)
     (try! (stx-transfer? amount sender (as-contract tx-sender)))
     (map-set user-stakes
       sender
@@ -374,3 +378,26 @@
 
 (define-read-only (get-epoch-info (epoch uint))
   (ok (map-get? epoch-data epoch)))
+
+(define-public (pause-contract)
+  (let
+    (
+      (sender tx-sender)
+    )
+    (asserts! (is-eq sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (var-get contract-paused)) ERR-CONTRACT-PAUSED)
+    (var-set contract-paused true)
+    (ok true)))
+
+(define-public (unpause-contract)
+  (let
+    (
+      (sender tx-sender)
+    )
+    (asserts! (is-eq sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (asserts! (var-get contract-paused) ERR-CONTRACT-PAUSED)
+    (var-set contract-paused false)
+    (ok true)))
+
+(define-read-only (is-contract-paused)
+  (ok (var-get contract-paused)))
