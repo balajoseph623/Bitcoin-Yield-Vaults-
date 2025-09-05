@@ -100,6 +100,29 @@
       (+ (calculate-epoch-yield user-amount from-epoch)
          (calculate-epoch-yield user-amount (+ from-epoch u1))))))
 
+(define-private (calculate-referral-bonus (amount uint))
+  (/ (* amount (var-get referral-bonus-rate)) u10000))
+
+(define-private (process-referral-bonus (user principal) (amount uint))
+  (match (map-get? user-referrer user)
+    referrer (let
+      (
+        (bonus (calculate-referral-bonus amount))
+        (current-stats (default-to 
+          { total-referrals: u0, total-referral-rewards: u0, pending-rewards: u0 }
+          (map-get? referrer-stats referrer)))
+      )
+      (map-set referrer-stats
+        referrer
+        {
+          total-referrals: (+ (get total-referrals current-stats) u1),
+          total-referral-rewards: (+ (get total-referral-rewards current-stats) bonus),
+          pending-rewards: (+ (get pending-rewards current-stats) bonus)
+        })
+      (var-set total-referral-rewards (+ (var-get total-referral-rewards) bonus))
+      bonus)
+    u0))
+
 ;; Public functions
 (define-public (deposit-with-tier (amount uint) (tier uint))
   (let
@@ -113,6 +136,7 @@
     (asserts! (not (var-get contract-paused)) ERR-CONTRACT-PAUSED)
     (asserts! (is-valid-tier tier) ERR-INVALID-TIER)
     (try! (stx-transfer? amount sender (as-contract tx-sender)))
+    (process-referral-bonus sender amount)
     (map-set user-positions
       sender
       {
@@ -214,6 +238,8 @@
 (define-constant ERR-NO-YIELD-AVAILABLE (err u106))
 (define-constant ERR-DISTRIBUTION-ACTIVE (err u107))
 (define-constant ERR-CONTRACT-PAUSED (err u108))
+(define-constant ERR-INVALID-REFERRER (err u109))
+(define-constant ERR-SELF-REFERRAL (err u110))
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var total-yield-pool uint u0)
@@ -221,6 +247,8 @@
 (define-data-var distribution-interval uint u1440)
 (define-data-var current-epoch uint u0)
 (define-data-var contract-paused bool false)
+(define-data-var referral-bonus-rate uint u500)
+(define-data-var total-referral-rewards uint u0)
 
 (define-map user-stakes principal 
   {
@@ -239,6 +267,15 @@
   }
 )
 
+(define-map user-referrer principal principal)
+(define-map referrer-stats principal 
+  {
+    total-referrals: uint,
+    total-referral-rewards: uint,
+    pending-rewards: uint
+  }
+)
+
 (define-public (deposit-for-yield (amount uint))
   (let
     (
@@ -252,6 +289,7 @@
     (asserts! (not (var-get vault-locked)) ERR-VAULT-LOCKED)
     (asserts! (not (var-get contract-paused)) ERR-CONTRACT-PAUSED)
     (try! (stx-transfer? amount sender (as-contract tx-sender)))
+    (process-referral-bonus sender amount)
     (map-set user-stakes
       sender
       {
@@ -401,3 +439,41 @@
 
 (define-read-only (is-contract-paused)
   (ok (var-get contract-paused)))
+
+(define-public (set-referrer (referrer principal))
+  (let
+    (
+      (sender tx-sender)
+    )
+    (asserts! (not (is-eq sender referrer)) ERR-SELF-REFERRAL)
+    (asserts! (is-none (map-get? user-referrer sender)) ERR-INVALID-REFERRER)
+    (asserts! (or (is-some (map-get? user-positions referrer))
+                  (is-some (map-get? user-stakes referrer))) ERR-INVALID-REFERRER)
+    (map-set user-referrer sender referrer)
+    (ok true)))
+
+(define-public (claim-referral-rewards)
+  (let
+    (
+      (sender tx-sender)
+      (stats (unwrap! (map-get? referrer-stats sender) ERR-NOT-AUTHORIZED))
+      (pending (get pending-rewards stats))
+    )
+    (asserts! (> pending u0) ERR-INSUFFICIENT-BALANCE)
+    (try! (as-contract (stx-transfer? pending (as-contract tx-sender) sender)))
+    (map-set referrer-stats
+      sender
+      (merge stats { pending-rewards: u0 }))
+    (ok pending)))
+
+(define-read-only (get-referrer-stats (user principal))
+  (ok (map-get? referrer-stats user)))
+
+(define-read-only (get-user-referrer (user principal))
+  (ok (map-get? user-referrer user)))
+
+(define-read-only (get-referral-bonus-rate)
+  (ok (var-get referral-bonus-rate)))
+
+(define-read-only (get-total-referral-rewards)
+  (ok (var-get total-referral-rewards)))
