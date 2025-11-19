@@ -1,0 +1,16 @@
+[project]
+name = "bitcoin-yield-vaults"
+description = "A Stacks smart contract for Bitcoin yield generation through vault mechanisms"
+authors = ["balajoseph623@gmail.com"]
+telemetry = false
+cache_dir = ".clarinet"
+
+[contracts.yield-vault]
+path = "contracts/yield-vault.clar"
+
+[repl]
+costs_version = 3
+parser_version = 2
+
+[[project.requirements]]
+contract_id = "SP000000000000000000002Q6VF78.pox-4"
