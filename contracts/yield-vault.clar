@@ -33,6 +33,16 @@
     }
 )
 
+(define-map vault-tiers
+    { owner: principal }
+    {
+        tier-level: uint,
+        total-compounds: uint,
+        avg-balance: uint,
+        tier-updated-block: uint
+    }
+)
+
 (define-map vault-stats
     { vault-id: uint }
     {
@@ -47,6 +57,9 @@
 (define-data-var total-vaults uint u0)
 (define-data-var total-locked-value uint u0)
 (define-data-var protocol-fee-rate uint u100) ;; 1% protocol fee
+(define-data-var tier1-threshold uint u5000000) ;; 5 STX
+(define-data-var tier2-threshold uint u25000000) ;; 25 STX
+(define-data-var tier3-threshold uint u100000000) ;; 100 STX
 
 ;; Events
 (define-data-var vault-created-event (string-ascii 50) "vault-created")
@@ -78,6 +91,17 @@
             auto-compound: enable-auto-compound,
             last-compound: block-height,
             compound-count: u0
+        }
+    )
+    
+    ;; Initialize vault tier
+    (map-set vault-tiers
+        { owner: tx-sender }
+        {
+            tier-level: u0,
+            total-compounds: u0,
+            avg-balance: initial-deposit,
+            tier-updated-block: block-height
         }
     )
     
@@ -167,10 +191,15 @@
     (asserts! (> compound-amount u0) ERR_INSUFFICIENT_BALANCE)
     
     ;; Add yield to principal balance (compounding)
+    (let (
+        (new-balance (+ (get balance vault-data) compound-amount))
+        (tier-data (unwrap! (map-get? vault-tiers { owner: tx-sender }) ERR_VAULT_NOT_FOUND))
+        (new-compound-count (+ (get total-compounds tier-data) u1))
+    )
     (map-set vaults
         { owner: tx-sender }
         (merge vault-data {
-            balance: (+ (get balance vault-data) compound-amount),
+            balance: new-balance,
             last-yield-claim: block-height,
             yield-accumulated: u0,
             last-compound: block-height,
@@ -178,8 +207,18 @@
         })
     )
     
+    (map-set vault-tiers
+        { owner: tx-sender }
+        (merge tier-data {
+            total-compounds: new-compound-count,
+            avg-balance: (/ (+ (get avg-balance tier-data) new-balance) u2),
+            tier-updated-block: block-height
+        })
+    )
+    
     ;; Update global locked value
     (var-set total-locked-value (+ (var-get total-locked-value) compound-amount))
+    )
     
     (ok compound-amount)
     )
@@ -193,6 +232,7 @@
         (total-yield (calculate-yield vault-data))
         (protocol-fee (/ (* total-yield (var-get protocol-fee-rate)) u10000))
         (compound-amount (- total-yield protocol-fee))
+        (tier-data (unwrap! (map-get? vault-tiers { owner: vault-owner }) ERR_VAULT_NOT_FOUND))
     )
     ;; Check if auto-compound is enabled and cooldown met
     (asserts! (get auto-compound vault-data) ERR_NOT_AUTHORIZED)
@@ -200,10 +240,14 @@
     (asserts! (> compound-amount u0) ERR_INSUFFICIENT_BALANCE)
     
     ;; Compound the yield
+    (let (
+        (new-balance (+ (get balance vault-data) compound-amount))
+        (new-compound-count (+ (get total-compounds tier-data) u1))
+    )
     (map-set vaults
         { owner: vault-owner }
         (merge vault-data {
-            balance: (+ (get balance vault-data) compound-amount),
+            balance: new-balance,
             last-yield-claim: block-height,
             yield-accumulated: u0,
             last-compound: block-height,
@@ -211,10 +255,20 @@
         })
     )
     
+    (map-set vault-tiers
+        { owner: vault-owner }
+        (merge tier-data {
+            total-compounds: new-compound-count,
+            avg-balance: (/ (+ (get avg-balance tier-data) new-balance) u2),
+            tier-updated-block: block-height
+        })
+    )
+    
     ;; Update global locked value
     (var-set total-locked-value (+ (var-get total-locked-value) compound-amount))
     
     (ok compound-amount)
+    )
     )
 )
 
@@ -292,6 +346,39 @@
     }
 )
 
+;; Calculate current tier level based on balance
+(define-private (calculate-tier-level (balance uint))
+    (if (>= balance (var-get tier3-threshold))
+        u3
+        (if (>= balance (var-get tier2-threshold))
+            u2
+            (if (>= balance (var-get tier1-threshold))
+                u1
+                u0
+            )
+        )
+    )
+)
+
+;; Update vault tier
+(define-public (update-vault-tier)
+    (let (
+        (vault-data (unwrap! (map-get? vaults { owner: tx-sender }) ERR_VAULT_NOT_FOUND))
+        (tier-data (unwrap! (map-get? vault-tiers { owner: tx-sender }) ERR_VAULT_NOT_FOUND))
+        (current-tier (calculate-tier-level (get balance vault-data)))
+    )
+    (map-set vault-tiers
+        { owner: tx-sender }
+        (merge tier-data {
+            tier-level: current-tier,
+            avg-balance: (/ (+ (get avg-balance tier-data) (get balance vault-data)) u2),
+            tier-updated-block: block-height
+        })
+    )
+    (ok current-tier)
+    )
+)
+
 ;; Check if compound is available
 (define-read-only (can-compound (owner principal))
     (match (map-get? vaults { owner: owner })
@@ -307,6 +394,11 @@
         })
         { can-compound: false, blocks-until-next: u0, pending-yield: u0 }
     )
+)
+
+;; Get vault tier information
+(define-read-only (get-vault-tier (owner principal))
+    (map-get? vault-tiers { owner: owner })
 )
 
 ;; Admin functions (only contract owner)
